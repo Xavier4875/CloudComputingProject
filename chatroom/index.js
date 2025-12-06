@@ -4,7 +4,8 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const { OpenAI } = require('openai');
-
+const { DynamoDBClient, PutItemCommand } = require("@aws-sdk/client-dynamodb");
+const crypto = require("crypto");
 
 const app = express();
 const server = http.createServer(app);
@@ -12,43 +13,106 @@ const io = new Server(server);
 
 app.use(express.static('public'));
 
+// OpenAI client
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
-})
+});
 
+// DynamoDB client
+const db = new DynamoDBClient({
+  region: "us-east-2", 
+});
+
+// Helper function to save messages
+async function saveMessage(username, message) {
+  const item = {
+    messageID: { S: crypto.randomUUID() },
+    timestamp: { N: Date.now().toString() },
+    username: { S: username },
+    message: { S: message },
+  };
+
+  const command = new PutItemCommand({
+    TableName: "ChatMessages",
+    Item: item,
+  });
+
+  try {
+    await db.send(command);
+    console.log(`Saved message: ${username}: ${message}`);
+  } catch (err) {
+    console.error("Error saving message to DynamoDB:", err);
+  }
+}
+
+// Socket.IO connection
 io.on('connection', (socket) => {
-  console.log('A user connected');
+  console.log(`A user connected: ${socket.id}`);
 
-  socket.on('chat message', async (msg) => {
-    io.emit('chat message', msg);
+  // Store username in socket.data
+  socket.on("set username", (username) => {
+    socket.data.username = username || "Anonymous";
+    console.log(`Username set: ${socket.data.username} (${socket.id})`);
+  });
 
-    const trimmedMsg = msg.trim();
+  // Handle chat messages
+  socket.on("chat message", async (data) => {
+    const username = data.username || "Anonymous";
+    const message = data.message;
 
-    if (trimmedMsg.startsWith('@bot')) {
-    const prompt = trimmedMsg.replace(/@bot/i, '').trim();
+    // Broadcast user message
+    io.emit("chat message", { username, message });
 
-    try {
-      const response = await openai.chat.completions.create({
-        model: 'gpt-4o',
-        messages: [{role: 'user', content: prompt}],
-      });
+    // Save user message
+    await saveMessage(username, message);
 
-      const aiReply = `🤖 Bot: ${response.choices[0].message.content}`;
-      io.emit('chat message', aiReply);
-    } catch (err) {
-      console.error('Error communicating with OpenAI:', err.message);
-      io.emit('chat message', '🤖 Bot: Sorry, I am having trouble responding right now.');
-    }
+    // Handle bot
+    const trimmed = message.trim();
+    if (trimmed.startsWith("@bot")) {
+      const prompt = trimmed.replace(/@bot/i, "").trim();
+
+      try {
+        const response = await openai.chat.completions.create({
+          model: "gpt-4o",
+          messages: [{ role: "user", content: prompt }],
+        });
+
+        const aiReply = response.choices[0].message.content;
+
+        // Broadcast bot reply
+        io.emit("chat message", {
+          username: "🤖 Bot",
+          message: aiReply,
+        });
+
+        // Save bot reply
+        await saveMessage("🤖 Bot", aiReply);
+
+      } catch (err) {
+        console.error("OpenAI error:", err.message);
+
+        const errorMessage = "Sorry, I'm having trouble responding right now.";
+
+        io.emit("chat message", {
+          username: "🤖 Bot",
+          message: errorMessage,
+        });
+
+        await saveMessage("🤖 Bot", errorMessage);
+      }
     }
   });
 
-
-  socket.on('disconnect', () => {
-    console.log('User disconnected');
+  // Handle disconnect
+  socket.on("disconnect", () => {
+    console.log(`User disconnected: ${socket.data.username || "Unknown"} (${socket.id})`);
   });
 });
 
+// Start server
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Server running at http://localhost:${PORT}`);
 });
+
+

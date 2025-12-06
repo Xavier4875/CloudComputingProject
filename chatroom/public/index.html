@@ -13,32 +13,60 @@
 <body>
   <h1>Chatroom</h1>
   <ul id="messages"></ul>
+
   <form id="form">
-    <input id="input" autocomplete="off" placeholder="Type your message..." />
-    <button>Send</button>
+    <input id="input" autocomplete="off" placeholder="Type your message..." disabled />
+    <button disabled>Send</button>
   </form>
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
     const socket = io();
-    const form = document.getElementById('form');
-    const input = document.getElementById('input');
-    const messages = document.getElementById('messages');
 
-    form.addEventListener('submit', function(e) {
+    const form = document.getElementById("form");
+    const input = document.getElementById("input");
+    const button = form.querySelector("button");
+    const messages = document.getElementById("messages");
+
+    let username = localStorage.getItem("chat_username");
+
+    // Keep prompting until a valid username is entered
+    while (!username || username.trim() === "") {
+      username = prompt("Please enter a username:");
+      if (username) username = username.trim();
+    }
+
+    localStorage.setItem("chat_username", username);
+
+    // Enable input and button now that username is set
+    input.disabled = false;
+    button.disabled = false;
+    input.focus();
+
+    // Send username to server
+    socket.emit("set username", username);
+
+    // Handle form submission
+    form.addEventListener("submit", function(e) {
       e.preventDefault();
       if (input.value) {
-        socket.emit('chat message', input.value);
-        input.value = '';
+        socket.emit("chat message", {
+          username: username,
+          message: input.value
+        });
+        input.value = "";
       }
     });
 
-    socket.on('chat message', function(msg) {
-      const item = document.createElement('li');
-      item.textContent = msg;
+    // Listen for messages from server
+    socket.on("chat message", function(data) {
+      const item = document.createElement("li");
+      item.textContent = `${data.username}: ${data.message}`;
       messages.appendChild(item);
       window.scrollTo(0, document.body.scrollHeight);
     });
   </script>
 </body>
 </html>
+
+
